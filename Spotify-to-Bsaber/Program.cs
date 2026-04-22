@@ -1,0 +1,2 @@
+﻿string authToken = "";
+string playlistUrl = "";
