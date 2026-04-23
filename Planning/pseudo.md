@@ -42,7 +42,32 @@ POST https://accounts.spotify.com/api/token
   refresh_token=YOUR_REFRESH_TOKEN
   client_id=YOUR_ID
   client_secret=YOUR_SECRET
+
+
+Returns:
+{
+  "access_token": "BQBLuPRYBQ....",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "AQAQfyEFmJJ....", (not ALWAYS returned, so may need to ignore if inexistent)
+  "scope": "user-read-email user-read-private"
+}
+C#:
+public record TokenResponse(
+    string AccessToken,
+    string TokenType,
+    int ExpiresIn,
+    string? RefreshToken,  // nullable — not always returned
+    string Scope
+);
+var newTokens = JsonSerializer.Deserialize<TokenResponse>(json, options);
+
+accessToken = newTokens.AccessToken;
+if (newTokens.RefreshToken != null)
+    refreshToken = newTokens.RefreshToken;
+
 ```
+
 
 then set new token to this one and update last expired file
 
