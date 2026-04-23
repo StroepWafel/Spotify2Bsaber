@@ -4,7 +4,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace Spotify_to_Bsaber {
+namespace Spotify2Bs {
     public class Spotify2BS : AsyncCommand<Spotify2BS.Settings> {
         private static readonly HttpClient _client = new();
 
@@ -17,7 +17,8 @@ namespace Spotify_to_Bsaber {
 
         // ── BeatSaver models ────────────────────────────────────────────
         public record BsSearchResponse(List<BsMap> Docs);
-        public record BsMap(string Id, string Name, string SongName, string SongAuthorName, string LevelAuthorName, List<BsVersion> Versions);
+        public record BsMap(string Id, BsMetadata Metadata, List<BsVersion> Versions);
+        public record BsMetadata(string SongName, string SongAuthorName, string LevelAuthorName);
         public record BsVersion(string DownloadURL, string Hash, string State);
 
         // ── Settings ────────────────────────────────────────────────────
@@ -62,6 +63,11 @@ namespace Spotify_to_Bsaber {
             [Description("Print download URLs without downloading (Bool)")]
             [DefaultValue(false)]
             public bool DryRun { get; init; } = false;
+
+            [CommandOption("--debug")]
+            [Description("Print raw BeatSaver API responses for troubleshooting")]
+            [DefaultValue(false)]
+            public bool Debug { get; init; } = false;
         }
 
         // ── Entry point ─────────────────────────────────────────────────
@@ -83,14 +89,27 @@ namespace Spotify_to_Bsaber {
 
             foreach (var track in tracks) {
                 var artistName = track.Artists.FirstOrDefault()?.Name ?? "";
-                var query = settings.Literality
-                    ? $"{track.Name} {artistName}"
-                    : track.Name;
+
+                // When literality is on, still search by song name only — artist matching
+                // happens on the returned results, not the query
+                var query = track.Name + ", " + artistName;
 
                 AnsiConsole.MarkupLine($"Searching: [cyan]{Markup.Escape(query)}[/]");
 
-                var maps = await FindBeatSaverMaps(query, settings.Depth, settings.ExtraParameters, options);
-                var match = FindBestMatch(maps, track.Name, artistName, settings.Sensitivity);
+                var maps = await FindBeatSaverMaps(query, settings.Depth, settings.ExtraParameters, options, settings.Debug);
+
+                if (maps.Count == 0) {
+                    AnsiConsole.MarkupLine($"  [red]No results from BeatSaver[/]");
+                    notFound.Add($"{track.Name} - {artistName}");
+                    continue;
+                }
+
+                BsMap? match;
+                if (settings.Manual) {
+                    match = PromptManualSelection(maps, track.Name);
+                } else {
+                    match = FindBestMatch(maps, track.Name, artistName, settings.Sensitivity, settings.Literality);
+                }
 
                 if (match == null) {
                     AnsiConsole.MarkupLine($"  [red]No match found[/]");
@@ -98,18 +117,14 @@ namespace Spotify_to_Bsaber {
                     continue;
                 }
 
-                // Manual selection
-                if (settings.Manual && maps.Count > 0) {
-                    match = PromptManualSelection(maps, track.Name);
-                }
-
                 var downloadUrl = match.Versions.FirstOrDefault()?.DownloadURL;
                 if (downloadUrl == null) {
+                    AnsiConsole.MarkupLine($"  [red]No download URL on matched map[/]");
                     notFound.Add($"{track.Name} - {artistName}");
                     continue;
                 }
 
-                AnsiConsole.MarkupLine($"  [green]Matched:[/] {Markup.Escape(match.SongName)} by {Markup.Escape(match.LevelAuthorName)}");
+                AnsiConsole.MarkupLine($"  [green]Matched:[/] {Markup.Escape(match.Metadata.SongName)} by {Markup.Escape(match.Metadata.SongAuthorName)} (mapped by {Markup.Escape(match.Metadata.LevelAuthorName)})");
                 downloadUrls.Add(downloadUrl);
             }
 
@@ -138,9 +153,8 @@ namespace Spotify_to_Bsaber {
         private async Task<List<TrackInfo>?> FetchSpotifyTracks(string token, string playlistId, JsonSerializerOptions options) {
             var tracks = new List<TrackInfo>();
             string? nextUrl = $"https://api.spotify.com/v1/playlists/{playlistId}";
-
-            // First request gets the full playlist, subsequent ones page through tracks
             bool firstRequest = true;
+
             while (nextUrl != null) {
                 var request = new HttpRequestMessage(HttpMethod.Get, nextUrl);
                 request.Headers.Add("Authorization", $"Bearer {token}");
@@ -164,7 +178,7 @@ namespace Spotify_to_Bsaber {
                     var playlist = JsonSerializer.Deserialize<PlaylistResponse>(json, options);
                     if (playlist == null) return tracks;
                     tracks.AddRange(playlist.Tracks.Items
-                        .Where(i => i.Track != null)
+                        .Where(i => i?.Track != null)
                         .Select(i => i.Track));
                     nextUrl = playlist.Tracks.Next;
                     firstRequest = false;
@@ -172,7 +186,7 @@ namespace Spotify_to_Bsaber {
                     var page = JsonSerializer.Deserialize<PlaylistTracks>(json, options);
                     if (page == null) break;
                     tracks.AddRange(page.Items
-                        .Where(i => i.Track != null)
+                        .Where(i => i?.Track != null)
                         .Select(i => i.Track));
                     nextUrl = page.Next;
                 }
@@ -182,7 +196,7 @@ namespace Spotify_to_Bsaber {
         }
 
         // ── BeatSaver search ────────────────────────────────────────────
-        private async Task<List<BsMap>> FindBeatSaverMaps(string query, int pages, string extraParams, JsonSerializerOptions options) {
+        private async Task<List<BsMap>> FindBeatSaverMaps(string query, int pages, string extraParams, JsonSerializerOptions options, bool debug = false) {
             var results = new List<BsMap>();
 
             for (int i = 0; i < pages; i++) {
@@ -196,14 +210,27 @@ namespace Spotify_to_Bsaber {
 
                 try {
                     var response = await _client.SendAsync(request);
-                    if (!response.IsSuccessStatusCode) break;
+                    if (!response.IsSuccessStatusCode) {
+                        AnsiConsole.MarkupLine($"  [red]BeatSaver returned {response.StatusCode}[/]");
+                        break;
+                    }
 
                     var json = await response.Content.ReadAsStringAsync();
-                    var searchResult = JsonSerializer.Deserialize<BsSearchResponse>(json, options);
-                    if (searchResult?.Docs == null || searchResult.Docs.Count == 0) break;
 
+                    if (debug) {
+                        AnsiConsole.MarkupLine($"[grey]Raw ({i}): {Markup.Escape(json[..Math.Min(500, json.Length)])}[/]");
+                    }
+
+                    var searchResult = JsonSerializer.Deserialize<BsSearchResponse>(json, options);
+
+                    if (debug) {
+                        AnsiConsole.MarkupLine($"[grey]Deserialized {searchResult?.Docs?.Count ?? 0} docs[/]");
+                    }
+
+                    if (searchResult?.Docs == null || searchResult.Docs.Count == 0) break;
                     results.AddRange(searchResult.Docs);
-                } catch {
+                } catch (Exception ex) {
+                    AnsiConsole.MarkupLine($"  [red]BeatSaver error: {Markup.Escape(ex.Message)}[/]");
                     break;
                 }
             }
@@ -212,9 +239,13 @@ namespace Spotify_to_Bsaber {
         }
 
         // ── Matching ─────────────────────────────────────────────────────
-        private static BsMap? FindBestMatch(List<BsMap> maps, string songName, string artistName, int sensitivity) {
+        private static BsMap? FindBestMatch(List<BsMap> maps, string songName, string artistName, int sensitivity, bool literality) {
             foreach (var map in maps) {
-                if (IsMatch(map.SongName, songName, sensitivity))
+                var meta = map.Metadata;
+                bool songMatches = IsMatch(meta.SongName, songName, sensitivity);
+                bool artistMatches = !literality || IsMatch(meta.SongAuthorName, artistName, sensitivity);
+
+                if (songMatches && artistMatches)
                     return map;
             }
             return null;
@@ -232,17 +263,34 @@ namespace Spotify_to_Bsaber {
             Regex.Replace(s.ToLowerInvariant(), @"[^a-z0-9\s]", "").Trim();
 
         // ── Manual selection ─────────────────────────────────────────────
-        private static BsMap PromptManualSelection(List<BsMap> maps, string trackName) {
-            var choices = maps.Take(5).Select(m =>
-                $"{m.SongName} — mapped by {m.LevelAuthorName}").ToList();
+        private static BsMap? PromptManualSelection(List<BsMap> maps, string trackName) {
+            var top = maps.Take(5).ToList();
 
-            var selected = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title($"Select map for [cyan]{Markup.Escape(trackName)}[/]:")
-                    .AddChoices(choices));
+            // Use index-based choices to avoid markup parsing of song names
+            var indexChoices = Enumerable.Range(0, top.Count)
+                .Select(i => i.ToString())
+                .Append("skip")
+                .ToList();
 
-            var index = choices.IndexOf(selected);
-            return maps[index];
+            var prompt = new SelectionPrompt<string>()
+                .Title($"Select map for [cyan]{Markup.Escape(trackName)}[/]:")
+                .UseConverter(s => {
+                    if (s == "skip")
+                        return Markup.Escape("[ skip this song ]");
+
+                    var i = int.Parse(s);
+                    var m = top[i];
+
+                    return Markup.Escape(
+                        $"{m.Metadata.SongName} — {m.Metadata.SongAuthorName} (mapped by {m.Metadata.LevelAuthorName})"
+                    );
+                })
+                .AddChoices(indexChoices);
+
+            var selected = AnsiConsole.Prompt(prompt);
+            if (selected == "skip") return null;
+
+            return top[int.Parse(selected)];
         }
 
         // ── Downloading ──────────────────────────────────────────────────
@@ -259,7 +307,7 @@ namespace Spotify_to_Bsaber {
                         await File.WriteAllBytesAsync(fileName, bytes);
                         AnsiConsole.MarkupLine($"  [green]✓[/] {Path.GetFileName(fileName)}");
                     } catch (Exception ex) {
-                        AnsiConsole.MarkupLine($"  [red]✗[/] Failed: {Markup.Escape(ex.Message)}");
+                        AnsiConsole.MarkupLine($"  [red]✗[/] Failed: {Markup.Escape(ex.Message)}[/]");
                     }
 
                     task.Increment(1);

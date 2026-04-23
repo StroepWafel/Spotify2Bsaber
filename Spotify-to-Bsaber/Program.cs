@@ -2,7 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Spotify_to_Bsaber;
+using Spotify2Bs;
 
 var app = new CommandApp<Spotify2BS>();
 await app.RunAsync(args);
