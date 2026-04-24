@@ -234,48 +234,44 @@ public class CliService {
                         })
                         .ToList();
 
-                    // Show GUI selection dialog on main thread
-                    Application.Invoke(() => {
-                        string choice = "skip";
+                    string choice = "skip";
+                    var ready = new ManualResetEventSlim(false);
 
+                    Application.Invoke(() => {
                         var d = new Dialog() {
                             Title = $"Select map for: {trackName}",
                             Width = 70,
-                            Height = options.Count + 8
+                            Height = options.Count + 9
                         };
 
                         var listView = new ListView() {
                             X = 1,
                             Y = 1,
                             Width = Dim.Fill(1),
-                            Height = options.Count,
+                            Height = options.Count + 1,
                             CanFocus = true
                         };
 
-                        var items = new System.Collections.ObjectModel.ObservableCollection<string>(
-                            options
-                                .Select(o => $"{o.song} — {o.artist} (mapped by {o.mapper})")
-                                .Append("[ skip this song ]")
-                        );
-                        listView.SetSource(items);
+                        var displayItems = options
+                            .Select(o => $"{o.song} — {o.artist} (mapped by {o.mapper})")
+                            .ToList();
+                        displayItems.Add("[ skip this song ]");
+                        listView.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(displayItems));
+                        listView.SelectedItem = 0;
 
-                        var selectBtn = new Button() {
-                            Text = "Select",
-                            X = 5,
-                            Y = options.Count + 2,
-                            IsDefault = true
-                        };
-
-                        selectBtn.Accepting += (_, _) => {
+                        void Confirm() {
                             var sel = listView.SelectedItem;
+                            if (sel < 0) sel = 0;
                             choice = sel >= options.Count ? "skip" : options[sel].idx;
                             Application.RequestStop();
-                        };
+                        }
 
-                        selectBtn.MouseClick += (_, _) => {
-                            var sel = listView.SelectedItem;
-                            choice = sel >= options.Count ? "skip" : options[sel].idx;
-                            Application.RequestStop();
+                        var selectBtn = new Button() { Text = "Select", X = 5, Y = options.Count + 2, IsDefault = true };
+                        selectBtn.Accepting += (_, _) => Confirm();
+                        selectBtn.MouseClick += (_, _) => Confirm();
+
+                        listView.MouseClick += (_, e) => {
+                            if (e.Flags.HasFlag(MouseFlags.Button1DoubleClicked)) Confirm();
                         };
 
                         d.KeyDown += (_, e) => {
@@ -290,10 +286,13 @@ public class CliService {
                         Application.Run(d);
                         d.Dispose();
 
-                        // Send choice back to CLI via stdin
-                        p.StandardInput.WriteLine(choice);
-                        p.StandardInput.Flush();
+                        ready.Set();
                     });
+
+                    ready.Wait();
+
+                    p.StandardInput.WriteLine(choice);
+                    p.StandardInput.Flush();
                 }
                 return;
             }
