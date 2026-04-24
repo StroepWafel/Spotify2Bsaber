@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            cli_name: spotify2bs.exe
+            gui_name: spotify2bs-gui.exe
+          - os: ubuntu-latest
+            rid: linux-x64
+            cli_name: spotify2bs
+            gui_name: spotify2bs-gui
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish CLI
+        run: >
+          dotnet publish Spotify-to-Bsaber/Spotify-to-Bsaber.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained
+          -p:PublishSingleFile=true
+          -p:DebugType=none
+          -o publish/cli
+
+      - name: Publish GUI
+        run: >
+          dotnet publish Spotify2BS.Gui/Spotify2BS.Gui.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained
+          -p:PublishSingleFile=true
+          -p:DebugType=none
+          -o publish/gui
+
+      - name: Bundle together
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp publish/cli/${{ matrix.cli_name }} dist/
+          cp publish/gui/${{ matrix.gui_name }} dist/
+
+      - name: Zip bundle
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a ../Spotify2Bsaber-${{ matrix.rid }}.zip *
+          else
+            zip ../Spotify2Bsaber-${{ matrix.rid }}.zip *
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Spotify2Bsaber-${{ matrix.rid }}.zip
+          generate_release_notes: true
