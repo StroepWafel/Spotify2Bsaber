@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="Spotify-to-Bsaber/Spotify2BS.csproj" />
+  <Project Path="Spotify2BS.Gui/Spotify2BS.Gui.csproj" Id="464384f2-5af9-4bff-98ce-d0e6d32c1db4" />
 </Solution>
