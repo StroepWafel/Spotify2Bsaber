@@ -264,10 +264,29 @@ namespace Spotify2Bs {
 
         // ── Manual selection ─────────────────────────────────────────────
         private static BsMap? PromptManualSelection(List<BsMap> maps, string trackName) {
-            var top = maps.Take(5).ToList();
+            if (!AnsiConsole.Profile.Capabilities.Interactive) {
+                // Structured output for GUI to intercept
+                var top = maps.Take(5).ToList();
+                Console.WriteLine($"MANUAL_SELECT_START:{trackName}");
+                for (int i = 0; i < top.Count; i++) {
+                    var m = top[i];
+                    Console.WriteLine($"MANUAL_SELECT_OPTION:{i}:{m.Metadata.SongName}|{m.Metadata.SongAuthorName}|{m.Metadata.LevelAuthorName}");
+                }
+                Console.WriteLine("MANUAL_SELECT_END");
+                Console.Out.Flush();
 
-            // Use index-based choices to avoid markup parsing of song names
-            var indexChoices = Enumerable.Range(0, top.Count)
+                // Wait for GUI to send back a choice via stdin
+                var response = Console.ReadLine()?.Trim();
+                if (response == "skip" || response == null) return null;
+                if (int.TryParse(response, out var idx) && idx >= 0 && idx < top.Count)
+                    return top[idx];
+
+                return null;
+            }
+
+            // Normal interactive terminal path (unchanged)
+            var topInteractive = maps.Take(5).ToList();
+            var indexChoices = Enumerable.Range(0, topInteractive.Count)
                 .Select(i => i.ToString())
                 .Append("skip")
                 .ToList();
@@ -275,22 +294,16 @@ namespace Spotify2Bs {
             var prompt = new SelectionPrompt<string>()
                 .Title($"Select map for [cyan]{Markup.Escape(trackName)}[/]:")
                 .UseConverter(s => {
-                    if (s == "skip")
-                        return Markup.Escape("[ skip this song ]");
-
+                    if (s == "skip") return "[ skip this song ]";
                     var i = int.Parse(s);
-                    var m = top[i];
-
-                    return Markup.Escape(
-                        $"{m.Metadata.SongName} — {m.Metadata.SongAuthorName} (mapped by {m.Metadata.LevelAuthorName})"
-                    );
+                    var m = topInteractive[i];
+                    return Markup.Escape($"{m.Metadata.SongName} — {m.Metadata.SongAuthorName} (mapped by {m.Metadata.LevelAuthorName})");
                 })
                 .AddChoices(indexChoices);
 
             var selected = AnsiConsole.Prompt(prompt);
             if (selected == "skip") return null;
-
-            return top[int.Parse(selected)];
+            return topInteractive[int.Parse(selected)];
         }
 
         // ── Downloading ──────────────────────────────────────────────────

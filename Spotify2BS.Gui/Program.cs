@@ -169,25 +169,23 @@ public class OAuthService {
 // CLI SERVICE
 // ───────────────────────────────────────────────
 public class CliService {
-    public Task Run(string token, string playlist, string destination,
+    public Task Run(
+        string token, string playlist, string destination,
         int sensitivity, int depth, bool manual, bool literality,
         string extraParams, bool dryRun, bool debug,
         Action<string> log, Action onFinish) {
-        var exePath = Path.Combine(AppContext.BaseDirectory, "spotify2bs.exe");
+        var exePath = Path.Combine(AppContext.BaseDirectory,
+            OperatingSystem.IsWindows() ? "spotify2bs.exe" : "spotify2bs");
+
         if (!File.Exists(exePath)) {
-            // Try without .exe for Linux/macOS
-            exePath = Path.Combine(AppContext.BaseDirectory, "spotify2bs");
-        }
-        if (!File.Exists(exePath)) {
-            log("ERROR: spotify2bs CLI binary not found next to GUI exe");
+            log("ERROR: spotify2bs CLI binary not found");
             onFinish();
             return Task.CompletedTask;
         }
 
-        var args = new StringBuilder();
+        var args = new System.Text.StringBuilder();
         args.Append($"\"{token}\" \"{playlist}\" \"{destination}\"");
-        args.Append($" -s {sensitivity}");
-        args.Append($" -d {depth}");
+        args.Append($" -s {sensitivity} -d {depth}");
         if (manual) args.Append(" -m");
         if (literality) args.Append(" -l");
         if (dryRun) args.Append(" -D");
@@ -199,14 +197,107 @@ public class CliService {
             Arguments = args.ToString(),
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
         var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
+        // Buffer for manual selection parsing
+        var manualSelectLines = new List<string>();
+        bool inManualSelect = false;
+
         p.OutputDataReceived += (_, e) => {
             if (e.Data == null) return;
+
+            if (e.Data.StartsWith("MANUAL_SELECT_START:")) {
+                inManualSelect = true;
+                manualSelectLines.Clear();
+                manualSelectLines.Add(e.Data);
+                return;
+            }
+
+            if (inManualSelect) {
+                manualSelectLines.Add(e.Data);
+
+                if (e.Data == "MANUAL_SELECT_END") {
+                    inManualSelect = false;
+                    var trackName = manualSelectLines[0]["MANUAL_SELECT_START:".Length..];
+                    var options = manualSelectLines
+                        .Where(l => l.StartsWith("MANUAL_SELECT_OPTION:"))
+                        .Select(l => {
+                            var parts = l["MANUAL_SELECT_OPTION:".Length..].Split(':', 2);
+                            var idx = parts[0];
+                            var fields = parts[1].Split('|');
+                            return (idx, song: fields[0], artist: fields[1], mapper: fields[2]);
+                        })
+                        .ToList();
+
+                    // Show GUI selection dialog on main thread
+                    Application.Invoke(() => {
+                        string choice = "skip";
+
+                        var d = new Dialog() {
+                            Title = $"Select map for: {trackName}",
+                            Width = 70,
+                            Height = options.Count + 8
+                        };
+
+                        var listView = new ListView() {
+                            X = 1,
+                            Y = 1,
+                            Width = Dim.Fill(1),
+                            Height = options.Count,
+                            CanFocus = true
+                        };
+
+                        var items = new System.Collections.ObjectModel.ObservableCollection<string>(
+                            options
+                                .Select(o => $"{o.song} — {o.artist} (mapped by {o.mapper})")
+                                .Append("[ skip this song ]")
+                        );
+                        listView.SetSource(items);
+
+                        var selectBtn = new Button() {
+                            Text = "Select",
+                            X = 5,
+                            Y = options.Count + 2,
+                            IsDefault = true
+                        };
+
+                        selectBtn.Accepting += (_, _) => {
+                            var sel = listView.SelectedItem;
+                            choice = sel >= options.Count ? "skip" : options[sel].idx;
+                            Application.RequestStop();
+                        };
+
+                        selectBtn.MouseClick += (_, _) => {
+                            var sel = listView.SelectedItem;
+                            choice = sel >= options.Count ? "skip" : options[sel].idx;
+                            Application.RequestStop();
+                        };
+
+                        d.KeyDown += (_, e) => {
+                            if (e.KeyCode == Key.Esc) {
+                                choice = "skip";
+                                Application.RequestStop();
+                                e.Handled = true;
+                            }
+                        };
+
+                        d.Add(listView, selectBtn);
+                        Application.Run(d);
+                        d.Dispose();
+
+                        // Send choice back to CLI via stdin
+                        p.StandardInput.WriteLine(choice);
+                        p.StandardInput.Flush();
+                    });
+                }
+                return;
+            }
+
             Application.Invoke(() => log(e.Data));
         };
 
