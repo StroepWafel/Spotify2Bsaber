@@ -22,12 +22,12 @@ jobs:
         include:
           - os: windows-latest
             rid: win-x64
-            cli_name: spotify2bs.exe
-            gui_name: spotify2bs-gui.exe
+            cli_name: Spotify2BS.exe
+            gui_name: Spotify2BS.Gui.exe
           - os: ubuntu-latest
             rid: linux-x64
-            cli_name: spotify2bs
-            gui_name: spotify2bs-gui
+            cli_name: Spotify2BS
+            gui_name: Spotify2BS.Gui
 
     runs-on: ${{ matrix.os }}
 
