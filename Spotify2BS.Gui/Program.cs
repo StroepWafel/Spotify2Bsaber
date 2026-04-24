@@ -569,7 +569,20 @@ public class MainWindow : Window {
             Application.RequestStop();
         };
 
-        cancelBtn.Accepting += (_, _) => Application.RequestStop();
+        cancelBtn.Accepting += (_, e) =>
+        {
+            result = null;
+            Application.RequestStop();
+        };
+
+        d.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Key.Esc) {
+                result = null;
+                Application.RequestStop();
+                e.Handled = true;
+            }
+        };
 
         d.Add(destLabel, destField, sensLabel, sensField, sensHint,
               depthLabel, depthField, paramLabel, paramField,
@@ -579,6 +592,7 @@ public class MainWindow : Window {
         Application.Run(d);
         d.Dispose();
 
+        if (result == null) return null;
         return result;
     }
 
