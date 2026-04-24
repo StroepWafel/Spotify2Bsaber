@@ -41,7 +41,7 @@ jobs:
 
       - name: Publish CLI
         run: >
-          dotnet publish Spotify-to-Bsaber/Spotify-to-Bsaber.csproj
+          dotnet publish Spotify-to-Bsaber/Spotify2BS.csproj
           -c Release
           -r ${{ matrix.rid }}
           --self-contained
