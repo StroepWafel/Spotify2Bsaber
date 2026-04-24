@@ -498,6 +498,18 @@ public class MainWindow : Window {
         var opts = ShowRunOptions();
         if (opts == null) return;
 
+        // Save run options back to config as new defaults
+        var cfgToSave = _config.Load();
+        cfgToSave.Destination = opts.Destination;
+        cfgToSave.Sensitivity = opts.Sensitivity;
+        cfgToSave.Depth = opts.Depth;
+        cfgToSave.Manual = opts.Manual;
+        cfgToSave.Literality = opts.Literality;
+        cfgToSave.ExtraParams = opts.ExtraParams;
+        cfgToSave.DryRun = opts.DryRun;
+        cfgToSave.Debug = opts.Debug;
+        _config.Save(cfgToSave);
+
         _running = true;
         _runBtn.Enabled = false;
         SetStatus("Running...");
