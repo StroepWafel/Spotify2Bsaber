@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Terminal.Gui;
+using System.IO.Compression;
 
 namespace Spotify2BS.Gui;
 
@@ -225,6 +226,89 @@ public class CliService {
 }
 
 // ───────────────────────────────────────────────
+// CLI UPDATER SERVICE
+// ───────────────────────────────────────────────
+public class CliUpdaterService {
+    private const string RepoApi = "https://api.github.com/repos/StroepWafel/Spotify2Bsaber/releases/latest";
+    private const string VersionFile = "cli_version.txt";
+    private readonly HttpClient _http;
+
+    public CliUpdaterService() {
+        _http = new HttpClient();
+        _http.DefaultRequestHeaders.Add("User-Agent", "Spotify2BS-GUI");
+    }
+
+    public string CliPath => Path.Combine(AppContext.BaseDirectory,
+        OperatingSystem.IsWindows() ? "spotify2bs.exe" : "spotify2bs");
+
+    private string VersionFilePath => Path.Combine(AppContext.BaseDirectory, VersionFile);
+
+    public string? GetInstalledVersion() {
+        if (!File.Exists(VersionFilePath)) return null;
+        return File.ReadAllText(VersionFilePath).Trim();
+    }
+
+    public async Task<(string tagName, string downloadUrl)?> GetLatestReleaseAsync() {
+        try {
+            var json = await _http.GetStringAsync(RepoApi);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var tag = root.GetProperty("tag_name").GetString()!;
+            var rid = OperatingSystem.IsWindows() ? "win-x64" : "linux-x64";
+            var assetName = $"Spotify2Bsaber-{rid}.zip";
+
+            var assets = root.GetProperty("assets");
+            foreach (var asset in assets.EnumerateArray()) {
+                if (asset.GetProperty("name").GetString() == assetName) {
+                    var url = asset.GetProperty("browser_download_url").GetString()!;
+                    return (tag, url);
+                }
+            }
+        } catch { }
+
+        return null;
+    }
+
+    public bool IsOutdated(string latestTag) {
+        var installed = GetInstalledVersion();
+        if (installed == null) return true;
+        return installed != latestTag;
+    }
+
+    public async Task DownloadAndInstallAsync(string downloadUrl, string tagName, Action<string> log) {
+        var zipPath = Path.Combine(AppContext.BaseDirectory, "cli_update.zip");
+
+        log($"Downloading {tagName}...");
+        var bytes = await _http.GetByteArrayAsync(downloadUrl);
+        await File.WriteAllBytesAsync(zipPath, bytes);
+
+        log("Extracting...");
+        var extractDir = Path.Combine(AppContext.BaseDirectory, "cli_update_tmp");
+        if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
+
+        System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, extractDir);
+
+        // Copy CLI binary out
+        var cliName = OperatingSystem.IsWindows() ? "spotify2bs.exe" : "spotify2bs";
+        var extractedCli = Path.Combine(extractDir, cliName);
+        if (!File.Exists(extractedCli))
+            throw new FileNotFoundException($"CLI binary not found in zip: {cliName}");
+
+        File.Copy(extractedCli, CliPath, overwrite: true);
+
+        // Save installed version
+        await File.WriteAllTextAsync(VersionFilePath, tagName);
+
+        // Cleanup
+        File.Delete(zipPath);
+        Directory.Delete(extractDir, true);
+
+        log($"CLI updated to {tagName} ✓");
+    }
+}
+
+// ───────────────────────────────────────────────
 // MAIN WINDOW
 // ───────────────────────────────────────────────
 public class MainWindow : Window {
@@ -364,19 +448,12 @@ public class MainWindow : Window {
 
     // ── Run CLI ───────────────────────────────────────────────────────
     private async Task DoRun() {
-        if (_running) {
-            Log("Already running — please wait.");
-            return;
-        }
+        if (_running) { Log("Already running — please wait."); return; }
 
         var cfg = _config.Load();
         var token = _config.GetValidToken();
 
-        if (token == null) {
-            Log("No valid token — please authenticate first (Ctrl+A).");
-            return;
-        }
-
+        if (token == null) { Log("No valid token — please authenticate first (Ctrl+A)."); return; }
         if (string.IsNullOrWhiteSpace(cfg.Playlist)) {
             Log("No playlist set — opening config...");
             ShowConfig();
@@ -384,7 +461,40 @@ public class MainWindow : Window {
             if (string.IsNullOrWhiteSpace(cfg.Playlist)) return;
         }
 
-        // Show run options dialog
+        // ── CLI check ──
+        var updater = new CliUpdaterService();
+        bool cliMissing = !File.Exists(updater.CliPath);
+
+        Log(cliMissing ? "CLI binary not found — checking for latest release..." : "Checking for CLI updates...");
+
+        var latest = await updater.GetLatestReleaseAsync();
+
+        if (latest == null && cliMissing) {
+            MessageBox.ErrorQuery("CLI Missing", "Could not find CLI binary and failed to reach GitHub.\nPlease check your internet connection.", "OK");
+            return;
+        }
+
+        if (latest != null && (cliMissing || updater.IsOutdated(latest.Value.tagName))) {
+            var action = cliMissing ? "download" : "update to";
+            var confirm = MessageBox.Query(
+                cliMissing ? "CLI Not Found" : "Update Available",
+                $"CLI is {(cliMissing ? "missing" : $"outdated (installed: {updater.GetInstalledVersion()})")}.\n" +
+                $"Would you like to {action} {latest.Value.tagName}?",
+                "Yes", "No");
+
+            if (confirm != 0) { Log("Skipped CLI download."); return; }
+
+            try {
+                await updater.DownloadAndInstallAsync(latest.Value.downloadUrl, latest.Value.tagName, Log);
+            } catch (Exception ex) {
+                MessageBox.ErrorQuery("Download Failed", ex.Message, "OK");
+                return;
+            }
+        } else {
+            Log($"CLI up to date ({updater.GetInstalledVersion() ?? "unknown"}).");
+        }
+
+        // ── Continue with run ──
         var opts = ShowRunOptions();
         if (opts == null) return;
 
@@ -394,16 +504,9 @@ public class MainWindow : Window {
         Log($"Starting: playlist={cfg.Playlist}  dest={opts.Destination}");
 
         await _cli.Run(
-            token.AccessToken,
-            cfg.Playlist!,
-            opts.Destination,
-            opts.Sensitivity,
-            opts.Depth,
-            opts.Manual,
-            opts.Literality,
-            opts.ExtraParams,
-            opts.DryRun,
-            opts.Debug,
+            token.AccessToken, cfg.Playlist!, opts.Destination,
+            opts.Sensitivity, opts.Depth, opts.Manual, opts.Literality,
+            opts.ExtraParams, opts.DryRun, opts.Debug,
             Log,
             () => {
                 _running = false;
