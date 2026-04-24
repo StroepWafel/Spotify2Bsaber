@@ -568,7 +568,11 @@ public class MainWindow : Window {
             };
             Application.RequestStop();
         };
-
+        cancelBtn.MouseClick += (_, _) =>
+        {
+            result = null;
+            Application.RequestStop();
+        };
         cancelBtn.Accepting += (_, e) =>
         {
             result = null;
